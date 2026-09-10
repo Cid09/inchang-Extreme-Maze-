@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>인창고 익스트림 v2.8 (BGM 차단 수정본)</title>
+    <style>
+        :root { --ich-blue: #003366; --ich-gold: #f1c40f; --hell-red: #ff0000; }
+        * { box-sizing: border-box; -webkit-user-select: none; touch-action: none; outline: none; }
+        body { background-color: #1a1a1a; color: white; margin: 0; padding: 0; display: flex; flex-direction: column; font-family: 'Malgun Gothic', sans-serif; height: 100dvh; overflow: hidden; }
+        .logo-header { background: var(--ich-blue); padding: 10px 0; text-align: center; border-bottom: 3px solid var(--ich-gold); flex-shrink: 0; z-index: 100; }
+        #game-container { flex: 1; display: flex; align-items: center; justify-content: center; position: relative; padding: 10px; background: #000; overflow: hidden; }
+        canvas { background-color: #fff; border: 2px solid #444; border-radius: 8px; z-index: 5; outline: none; }
+
+        .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 99999; text-align: center; }
+        .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px; width: 90%; max-width: 350px; }
+        .mode-btn { padding: 12px; border-radius: 8px; font-weight: bold; border: 2px solid #444; color: #888; font-size: 13px; cursor: pointer; background: #222; }
+        .mode-btn.active { border-color: var(--ich-gold); background: #333; color: white; box-shadow: 0 0 10px var(--ich-gold); }
+        .start-btn { padding: 15px 50px; background: var(--ich-gold); color: black; border: none; border-radius: 30px; font-weight: bold; font-size: 20px; cursor: pointer; margin-top: 5px; }
+
+        #controls-wrapper { background: #111; padding: 10px 0 80px 0; border-top: 2px solid var(--ich-blue); flex-shrink: 0; }
+        #controls { display: grid; grid-template-areas: ". up ." "left . right" ". down ."; gap: 10px; justify-content: center; }
+        .btn { width: 60px; height: 60px; background: #2c3e50; border-radius: 50%; display: flex; justify-content: center; align-items: center; font-size: 26px; color: white; border: 2px solid #34495e; }
+
+        #status-msg { position: absolute; top: 80px; width: 100%; text-align: center; font-weight: bold; color: var(--ich-gold); z-index: 1000; font-size: 18px; pointer-events: none; }
+        .red-light-border { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 15px solid var(--hell-red); pointer-events: none; display: none; z-index: 1000; box-shadow: inset 0 0 100px red; }
+    </style>
+</head>
+<body>
+
+<div class="red-light-border" id="red-light-ui"></div>
+<div id="status-msg"></div>
+
+<div class="logo-header">
+    <h1 style="margin:0; color:var(--ich-gold); font-size: 18px;">INCHANG EXTREME v2.8</h1>
+    <div style="font-size: 12px;">
+        <span id="stage-display" style="color:var(--ich-gold); font-weight:bold;">STAGE 1/13</span> |
+        TIME: <span id="timer-display" style="color:white; font-weight:bold;">30.00</span>
+    </div>
+</div>
+
+<div id="game-container">
+    <canvas id="mazeCanvas" tabindex="0"></canvas>
+
+    <div id="start-modal" class="overlay">
+        <h2 style="color:var(--ich-gold); margin-bottom: 5px;">인창고 생존 미로</h2>
+        <p style="color:#aaa; font-size: 13px; margin-bottom: 20px;">모드를 조합한 뒤 시작 버튼을 누르세요!</p>
+
+        <div class="mode-grid">
+            <div class="mode-btn" id="m-fog" onclick="toggleMode('fog')">🌫️ 연한 안개 모드</div>
+            <div class="mode-btn" id="m-chase" onclick="toggleMode('chase')">👺 추격전</div>
+            <div class="mode-btn" id="m-chaos" onclick="toggleMode('chaos')">🌀 카오스</div>
+            <div class="mode-btn" id="m-time" onclick="toggleMode('time')">⏳ 타임어택</div>
+            <div class="mode-btn" id="m-redlight" onclick="toggleMode('redlight')">🚦 무궁화</div>
+        </div>
+        <button class="start-btn" onclick="applyAndStart()">게임 시작</button>
+    </div>
+</div>
+
+<div id="controls-wrapper">
+    <div id="controls">
+        <div class="btn" style="grid-area: up;" onpointerdown="activeMoves.up=true" onpointerup="activeMoves.up=false">↑</div>
+        <div class="btn" style="grid-area: left;" onpointerdown="activeMoves.left=true" onpointerup="activeMoves.left=false">←</div>
+        <div class="btn" style="grid-area: right;" onpointerdown="activeMoves.right=true" onpointerup="activeMoves.right=false">→</div>
+        <div class="btn" style="grid-area: down;" onpointerdown="activeMoves.down=true" onpointerup="activeMoves.down=false">↓</div>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('mazeCanvas');
+    const ctx = canvas.getContext('2d');
+    const stages = [{s:15},{s:19},{s:23},{s:27},{s:31},{s:37},{s:43},{s:49},{s:55},{s:63},{s:71},{s:75},{s:79}];
+
+    let curIdx = 0, maze, gSize, cSize, player, isStarted = false;
+    let gameTime = 30, selectedModes = new Set();
+    let items = [], afterimages = [], playerPath = [];
+    let activeMoves = { up: false, down: false, left: false, right: false };
+    let isRedLight = false, chaser = {x:1, y:1}, chaosTick = 8;
+
+    // 🎵 오디오 파일 선언
+    const bgmList = [
+        new Audio('bgm1.mp3'),
+        new Audio('bgm2.mp3'),
+        new Audio('bgm3.mp3')
+    ];
+    const effectSound = new Audio('effect.mp3');
+
+    bgmList.forEach(track => { track.loop = true; });
+    let currentBgm = null;
+
+    // 🔄 스테이지별 BGM 변경 로직
+    function updateStageBgm() {
+        if(currentBgm) { currentBgm.pause(); currentBgm.currentTime = 0; }
+
+        let bgmIndex = curIdx % bgmList.length;
+        currentBgm = bgmList[bgmIndex];
+
+        if(currentBgm) {
+            // 브라우저의 차단을 뚫기 위해 클릭 이벤트 직후 강제 play 발생
+            currentBgm.play().catch(e => console.log("BGM 재생 차단 우회 시도 중...", e));
+        }
+    }
+
+    function toggleMode(mode) {
+        const btn = document.getElementById('m-' + mode);
+        if (selectedModes.has(mode)) {
+            selectedModes.delete(mode);
+            btn.classList.remove('active');
+        } else {
+            selectedModes.add(mode);
+            btn.classList.add('active');
+        }
+    }
+
+    // 🚀 사용자가 '게임 시작' 버튼을 누른 타이밍 (가장 중요)
+    function applyAndStart() {
+        document.getElementById('start-modal').style.display = 'none';
+        canvas.focus();
+
+        // 1. 유저 클릭 상호작용이 일어난 순간 즉시 음악 실행기 작동 (차단 해제)
+        updateStageBgm();
+
+        // 2. 미로 생성 및 타이머 딜레이 세팅
+        init();
+        requestAnimationFrame(renderLoop);
+        setInterval(processInput, 60);
+        if (selectedModes.has('redlight')) setInterval(toggleRedLight, 3000);
+        if (selectedModes.has('time')) setInterval(() => { if(isStarted) gameTime -= 0.1; }, 100);
+        if (selectedModes.has('chase')) setInterval(updateChaser, 200);
+        if (selectedModes.has('chaos')) setInterval(() => { if(isStarted) { chaosTick--; if(chaosTick<=0){teleport(); chaosTick=8;}} }, 1000);
+    }
+
+    function init() {
+        const stage = stages[curIdx];
+        gSize = stage.s;
+        document.getElementById('stage-display').innerText = `STAGE ${curIdx + 1}/${stages.length}`;
+        const container = document.getElementById('game-container');
+        const size = Math.min(container.clientWidth - 20, container.clientHeight - 20);
+        canvas.width = size; canvas.height = size;
+        cSize = size / gSize;
+        maze = makeMaze(gSize);
+        player = {x:1, y:1}; playerPath = [{x:1, y:1}];
+        items = selectedModes.has('time') ? Array.from({length:6}, () => findEmpty()) : [];
+        gameTime = 30 + (curIdx * 5);
+        chaosTick = 8;
+    }
+
+    function findEmpty() {
+        let rx, ry;
+        do { rx = Math.floor(Math.random()*gSize); ry = Math.floor(Math.random()*gSize); } while(maze[ry][rx] !== 0);
+        return {x:rx, y:ry};
+    }
+
+    function teleport() {
+        player = findEmpty();
+        playerPath = [player];
+    }
+
+    function makeMaze(size) {
+        let m = Array.from({length:size},()=>Array(size).fill(1));
+        function walk(x,y){
+            m[y][x]=0;
+            let d=[[0,1],[0,-1],[1,0],[-1,0]].sort(()=>Math.random()-0.5);
+            for(let [dx,dy] of d){
+                let nx=x+dx*2, ny=y+dy*2;
+                if(nx>0 && nx<size-1 && ny>0 && ny<size-1 && m[ny][nx]===1){ m[y+dy][x+dx]=0; walk(nx,ny); }
+            }
+        }
+        walk(1,1); m[size-2][size-2] = 0; return m;
+    }
+
+    function toggleRedLight() {
+        isRedLight = !isRedLight;
+        document.getElementById('red-light-ui').style.display = isRedLight ? 'block' : 'none';
+        document.getElementById('status-msg').innerText = isRedLight ? "움직이지 마세요!" : "";
+    }
+
+    function updateChaser() {
+        if(!isStarted || !selectedModes.has('chase')) return;
+        if(playerPath.length > 8) { let next = playerPath.shift(); chaser.x = next.x; chaser.y = next.y; }
+        if(chaser.x === player.x && chaser.y === player.y) { alert("👺 잡혔습니다!"); location.reload(); }
+    }
+
+    function processInput() {
+        if (activeMoves.up) move('up'); else if (activeMoves.down) move('down');
+        else if (activeMoves.left) move('left'); else if (activeMoves.right) move('right');
+    }
+
+    function move(dir) {
+        if (!isStarted) isStarted = true;
+        if (selectedModes.has('redlight') && isRedLight) { player.x = 1; player.y = 1; return; }
+        let dx=0, dy=0;
+        if(dir==='up') dy=-1; if(dir==='down') dy=1; if(dir==='left') dx=-1; if(dir==='right') dx=1;
+        let nx = player.x + dx, ny = player.y + dy;
+        if(nx>=0 && nx<gSize && ny>=0 && ny<gSize && maze[ny][nx]===0) {
+            afterimages.push({x: player.x, y: player.y, a: 0.5});
+            player.x = nx; player.y = ny; playerPath.push({x:nx, y:ny});
+            items = items.filter(it => it.x !== player.x || it.y !== player.y);
+        }
+        if(player.x === gSize-2 && player.y === gSize-2) checkClear();
+    }
+
+    function renderLoop() {
+        ctx.clearRect(0,0,canvas.width,canvas.height);
+        if(selectedModes.has('time')) document.getElementById('timer-display').innerText = gameTime.toFixed(2);
+        if(selectedModes.has('time') && gameTime <= 0) { alert("⏰ 타임오버!"); location.reload(); return; }
+
+        for(let y=0; y<gSize; y++){
+            for(let x=0; x<gSize; x++){
+                ctx.fillStyle = (maze[y][x]===1) ? "#2c3e50" : "#ffffff";
+                if(x===gSize-2 && y===gSize-2) ctx.fillStyle="#e74c3c";
+                ctx.fillRect(x*cSize, y*cSize, cSize+0.3, cSize+0.3);
+            }
+        }
+        afterimages = afterimages.filter(img => img.a > 0.05);
+        afterimages.forEach(img => {
+            ctx.fillStyle = `rgba(0, 85, 255, ${img.a})`;
+            ctx.beginPath(); ctx.arc(img.x*cSize + cSize/2, img.y*cSize + cSize/2, cSize/3, 0, Math.PI*2); ctx.fill();
+            img.a -= 0.08;
+        });
+        items.forEach(it => { ctx.fillStyle = "#f1c40f"; ctx.beginPath(); ctx.arc(it.x*cSize+cSize/2, it.y*cSize+cSize/2, cSize/3, 0, Math.PI*2); ctx.fill(); });
+        if(selectedModes.has('chase')) { ctx.fillStyle = "#ff0000"; ctx.fillRect(chaser.x*cSize, chaser.y*cSize, cSize, cSize); }
+        ctx.fillStyle="#0055ff"; ctx.beginPath(); ctx.arc(player.x*cSize+cSize/2, player.y*cSize+cSize/2, cSize/2.2, 0, Math.PI*2); ctx.fill();
+
+        if(selectedModes.has('fog')) {
+            const pX = player.x * cSize + cSize / 2;
+            const pY = player.y * cSize + cSize / 2;
+            ctx.fillStyle = "rgba(0, 0, 0, 0.7)";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.globalCompositeOperation = 'destination-out';
+            const viewRadius = cSize * 5.5;
+            const grad = ctx.createRadialGradient(pX, pY, 0, pX, pY, viewRadius);
+            grad.addColorStop(0, 'rgba(0, 0, 0, 1)'); grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.fillStyle = grad; ctx.beginPath(); ctx.arc(pX, pY, viewRadius, 0, Math.PI * 2); ctx.fill();
+            ctx.globalCompositeOperation = 'source-over';
+        }
+        requestAnimationFrame(renderLoop);
+    }
+
+    function checkClear() {
+        isStarted = false; activeMoves = { up: false, down: false, left: false, right: false };
+
+        effectSound.currentTime = 0;
+        effectSound.play().catch(e => console.log("효과음 재생 에러:", e));
+
+        if (curIdx < stages.length - 1) {
+            curIdx++;
+            alert("다음 스테이지!");
+            init();
+            updateStageBgm(); // 👈 다음 스테이지 전환 클릭 시에도 음악 연동
+        }
+        else {
+            alert("🏆 전 스테이지 정복!");
+            location.reload();
+        }
+    }
+
+    const keyHandler = (e) => {
+        const key = e.key.toLowerCase();
+        const isDown = e.type === 'keydown';
+        if(['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright'].includes(key)) {
+            e.preventDefault();
+            if(key === 'w' || key === 'arrowup') activeMoves.up = isDown;
+            if(key === 's' || key === 'arrowdown') activeMoves.down = isDown;
+            if(key === 'a' || key === 'arrowleft') activeMoves.left = isDown;
+            if(key === 'd' || key === 'arrowright') activeMoves.right = isDown;
+        }
+    };
+    window.addEventListener('keydown', keyHandler);
+    window.addEventListener('keyup', keyHandler);
+</script>
+</body>
+</html>
